@@ -17,5 +17,3 @@ pipenv run pip install nodeenv
 pipenv run nodeenv --node 18.17.1 --python-virtualenv
 
 pipenv run pip install pynecone
-pipenv run pc init --name translator
-pipenv run pc run
