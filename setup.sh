@@ -13,7 +13,6 @@ if [[ $"pipenv_installed" == "" ]]; then
 fi
 
 pyenv local 3.9.13
-pipenv run pip install nodeenv
+pipenv install
 pipenv run nodeenv --node 18.17.1 --python-virtualenv
 
-pipenv run pip install pynecone
