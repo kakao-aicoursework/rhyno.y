@@ -1,116 +1,119 @@
-"""Welcome to Pynecone! This file outlines the steps to create a basic app."""
-
-# Import pynecone.
-import openai
 import os
 from datetime import datetime
 
 import pynecone as pc
 from pynecone.base import Base
+from langchain import LLMChain
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain.schema import SystemMessage
 
+# TODO
+# 1. llm_query 중에는 입력창 닫기
+# 2. view / llm / model 파일 분리
 
-openai.api_key = open("api-key.txt").read()
-
-
-parallel_example = {
-    "한국어": ["오늘 날씨 어때", "딥러닝 기반의 AI기술이 인기를끌고 있다."],
-    "영어": ["How is the weather today", "Deep learning-based AI technology is gaining popularity."],
-    "일본어": ["今日の天気はどうですか", "ディープラーニングベースのAIテクノロジーが人気を集めています。"]
+# ------------------------------------------------------------------------------------------
+# -------- Global variable
+# ------------------------------------------------------------------------------------------
+os.environ["OPENAI_API_KEY"] = open("api-key.txt").read()
+data_by_api = {
+    "KAKAO_SYNC": open("project_data_카카오싱크.txt").read(),
 }
+chat = ChatOpenAI(temperature=0.8)
 
 
-def translate_text_using_text_davinci(text, src_lang, trg_lang) -> str:
-    response = openai.Completion.create(engine="text-davinci-003",
-                                        prompt=f"Translate the following {src_lang} text to {trg_lang}: {text}",
-                                        max_tokens=200,
-                                        n=1,
-                                        temperature=1
-                                        )
-    translated_text = response.choices[0].text.strip()
-    return translated_text
+# ------------------------------------------------------------------------------------------
+# -------- LLM Helper
+# ------------------------------------------------------------------------------------------
+
+def llm_query(question: str, api_type: str):
+    system_message = """assistant는 {api_type} 에 대한 chatbot 입니다.
+    다음 <{api_type}> 안에 제시되는 {api_type} 정보를 토대로 user 의 질문에 답한다.
+<{api_type}>
+{data_by_api}
+<{api_type}>
+
+질문의 답은 간결하고 명료하게 markdown 문법의 목록으로 작성한다.
+
+예시는 다음과 같다.
+<예시>
+{질문에 대한 답 요약}
+
+1.회원가입
+- {회원가입에 대한 내용}
+
+{공백줄}
+
+2.간편한 서비스약관 관리
+- {서비스약관 처리 간소화 내용}
+<예시>
+"""
+    system_message_prompt = SystemMessage(content=system_message)
+
+    human_template = ("질문: {question}")
+
+    human_message_prompt = HumanMessagePromptTemplate.from_template(human_template)
+    chat_prompt = ChatPromptTemplate.from_messages([system_message_prompt, human_message_prompt])
+
+    chain = LLMChain(llm=chat, prompt=chat_prompt)
+    return chain.run(api_type=api_type, question=question)
 
 
-def translate_text_using_chatgpt(text, src_lang, trg_lang) -> str:
-    # fewshot 예제를 만들고
-    def build_fewshot(src_lang, trg_lang):
-        src_examples = parallel_example[src_lang]
-        trg_examples = parallel_example[trg_lang]
+# ------------------------------------------------------------------------------------------
+# -------- User Define Structure
+# ------------------------------------------------------------------------------------------
 
-        fewshot_messages = []
-
-        for src_text, trg_text in zip(src_examples, trg_examples):
-            fewshot_messages.append({"role": "user", "content": src_text})
-            fewshot_messages.append({"role": "assistant", "content": trg_text})
-
-        return fewshot_messages
-
-    # system instruction 만들고
-    system_instruction = f"assistant는 번역앱으로서 동작한다. {src_lang}를 {trg_lang}로 적절하게 번역하고 번역된 텍스트만 출력한다."
-
-    # messages를만들고
-    fewshot_messages = build_fewshot(src_lang=src_lang, trg_lang=trg_lang)
-
-    messages = [{"role": "system", "content": system_instruction},
-                *fewshot_messages,
-                {"role": "user", "content": text}
-                ]
-
-    # API 호출
-    response = openai.ChatCompletion.create(model="gpt-3.5-turbo",
-                                            messages=messages)
-    translated_text = response['choices'][0]['message']['content']
-    # Return
-    return translated_text
-
-
-class Message(Base):
-    original_text: str
-    text: str
+class QnA(Base):
+    api_type: str
+    question: str
+    answer: str
     created_at: str
-    to_lang: str
 
+
+# ------------------------------------------------------------------------------------------
+# -------- Framework State Model
+# ------------------------------------------------------------------------------------------
 
 class State(pc.State):
     """The app state."""
 
-    text: str = ""
-    messages: list[Message] = []
-    src_lang: str = "한국어"
-    trg_lang: str = "영어"
+    qna_list: list[QnA] = []
+    is_working: bool = False
 
-    @pc.var
-    def output(self) -> str:
-        if not self.text.strip():
-            return "Translations will appear here."
-        translated = translate_text_using_chatgpt(
-            self.text, src_lang=self.src_lang, trg_lang=self.trg_lang)
-        return translated
+    # TODO 화면노출
+    def validate_not_empty(self, value: str):
+        if value.strip() == '':
+            raise Exception("input empty")
 
-    def post(self):
-        self.messages = [
-            Message(
-                original_text=self.text,
-                text=self.output,
-                created_at=datetime.now().strftime("%B %d, %Y %I:%M %p"),
-                to_lang=self.trg_lang,
-            )
-        ] + self.messages
+    async def on_submit(self, form_data):
+        api_type = form_data["api_type"]
+        question = form_data["question"]
+        self.validate_not_empty(api_type)
+        self.validate_not_empty(question)
+        self.is_working = True
+        qna = QnA(
+            api_type=form_data["api_type"],
+            question=form_data["question"],
+            answer="(ing) looking for an answer",
+            created_at=datetime.now().strftime("%I:%M%p on %B %d, %Y")
+        )
+        self.qna_list.append(qna)
+        yield
+        answer = llm_query(api_type=api_type, question=question)
+        print(answer)
+        qna.answer = answer
+        self.qna_list.remove(qna)
+        self.is_working = False
+        self.qna_list.append(qna)
+        yield
 
 
-# Define views.
-
-
-def header():
-    """Basic instructions to get started."""
-    return pc.box(
-        pc.text("Translator 🗺", font_size="2rem"),
-        pc.text(
-            "Translate things and post them as messages!",
-            margin_top="0.5rem",
-            color="#666",
-        ),
-    )
-
+# ------------------------------------------------------------------------------------------
+# -------- Define views
+# ------------------------------------------------------------------------------------------
 
 def down_arrow():
     return pc.vstack(
@@ -130,16 +133,24 @@ def text_box(text):
     )
 
 
-def message(message):
+def qna_view(qna):
     return pc.box(
         pc.vstack(
-            text_box(message.original_text),
+            text_box("Q. " + qna.question),
             down_arrow(),
-            text_box(message.text),
             pc.box(
-                pc.text(message.to_lang),
+                pc.markdown(
+                    qna.answer
+                ),
+                margin="5rem",
+                font_size="0.8rem",
+                padding="1rem",
+                background_color="white"
+            ),
+            pc.box(
+                pc.text(qna.api_type),
                 pc.text(" · ", margin_x="0.3rem"),
-                pc.text(message.created_at),
+                pc.text(qna.created_at),
                 display="flex",
                 font_size="0.8rem",
                 color="#666",
@@ -153,76 +164,62 @@ def message(message):
     )
 
 
-def smallcaps(text, **kwargs):
-    return pc.text(
-        text,
-        font_size="0.7rem",
-        font_weight="bold",
-        text_transform="uppercase",
-        letter_spacing="0.05rem",
-        **kwargs,
-    )
-
-
-def output():
-    return pc.box(
-        pc.box(
-            smallcaps(
-                "Output",
-                color="#aeaeaf",
-                background_color="white",
-                padding_x="0.1rem",
-            ),
-            position="absolute",
-            top="-0.5rem",
-        ),
-        pc.text(State.output),
-        padding="1rem",
-        border="1px solid #eaeaef",
-        margin_top="1rem",
-        border_radius="8px",
-        position="relative",
-    )
-
-
 def index():
     """The main view."""
     return pc.container(
-        header(),
-        pc.input(
-            placeholder="Text to translate",
-            on_blur=State.set_text,
-            margin_top="1rem",
-            border_color="#eaeaef"
+        # header
+        pc.box(
+            pc.hstack(
+                pc.text("ChatBot 🤖", font_size="2rem"),
+                pc.cond(State.is_working,
+                        pc.spinner(
+                            color="red",
+                            thickness=7,
+                            speed="3s",
+                            size="l",
+                        ),
+                        ),
+            ),
+            pc.text(
+                "Answer about KAKAO API",
+                margin_top="0.5rem",
+                color="#666",
+            ),
         ),
-        pc.select(
-            list(parallel_example.keys()),
-            value=State.src_lang,
-            placeholder="Select a language",
-            on_change=State.set_src_lang,
-            margin_top="1rem",
+        pc.form(
+            pc.vstack(
+                pc.input(
+                    placeholder="> Question",
+                    margin_top="1rem",
+                    border_color="#eaeaef",
+                    id="question"
+                ),
+                pc.select(
+                    list(data_by_api.keys()),
+                    default_value=list(data_by_api.keys())[0],
+                    placeholder="> Choose KAKAO-API",
+                    margin_top="1rem",
+                    id="api_type"
+                ),
+                pc.button("💬 send", type_="submit", margin_top="1rem")
+            ),
+            on_submit=State.on_submit,
         ),
-        pc.select(
-            list(parallel_example.keys()),
-            value=State.trg_lang,
-            placeholder="Select a language",
-            on_change=State.set_trg_lang,
-            margin_top="1rem",
-        ),
-        output(),
-        pc.button("Post", on_click=State.post, margin_top="1rem"),
         pc.vstack(
-            pc.foreach(State.messages, message),
+            pc.foreach(State.qna_list, qna_view),
             margin_top="2rem",
             spacing="1rem",
             align_items="left"
         ),
         padding="2rem",
-        max_width="600px"
+        min_width="600px"
     )
 
 
-# Add state and page to the app.
+# ------------------------------------------------------------------------------------------
+# -------- Add state and page to the app.
+# ------------------------------------------------------------------------------------------
+
 app = pc.App(state=State)
-app.add_page(index, title="Translator")
+app.add_page(index, title="KAKAO-API QnA")
 app.compile()
