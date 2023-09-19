@@ -1,0 +1,9 @@
+
+.web
+
+pynecone.db
+
+__pycache__/
+
+*.py[cod]
+exported.xlsx

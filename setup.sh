@@ -14,5 +14,7 @@ fi
 
 pyenv local 3.9.13
 pipenv install
+
+# nodejs 설치
 pipenv run nodeenv --node 18.17.1 --python-virtualenv
 
