@@ -17,6 +17,7 @@ langchain = "==0.0.250"
 pydantic = "==1.10.11"
 bs4 = "==0.0.1"
 tiktoken = "==0.5.1"
+chromadb = "*"
 
 [requires]
 python_full_version = "3.9.13"

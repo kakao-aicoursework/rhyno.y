@@ -10,6 +10,11 @@ from langchain.prompts.chat import (
     HumanMessagePromptTemplate,
 )
 from langchain.schema import SystemMessage
+import chromadb
+from chromadb.config import Settings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from chromadb.utils import embedding_functions
+from langchain.memory import FileChatMessageHistory
 
 # TODO
 # 1. llm_query 중에는 입력창 닫기
@@ -19,47 +24,125 @@ from langchain.schema import SystemMessage
 # -------- Global variable
 # ------------------------------------------------------------------------------------------
 os.environ["OPENAI_API_KEY"] = open("api-key.txt").read()
-data_by_api = {
-    "KAKAO_SYNC": open("project_data_카카오싱크.txt").read(),
+DATA_BY_API = {
+    "KAKAO_SYNC": "project_data_카카오싱크.txt",
+    "KAKAO_SOCIAL": "project_data_카카오소셜.txt",
+    "KAKAO_CHANNEL": "project_data_카카오채널.txt",
 }
-chat = ChatOpenAI(temperature=0.8)
+LLM = ChatOpenAI(temperature=0.8, max_tokens=500, model="gpt-3.5-turbo-16k")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../.web/data')
+CHROMA_CLIENT = chromadb.PersistentClient(path=DB_PATH, settings=Settings(allow_reset=True, anonymized_telemetry=False))
+COLLECTION = CHROMA_CLIENT.get_or_create_collection(
+    name="kakao_api",
+    embedding_function=embedding_functions.OpenAIEmbeddingFunction(
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+)
+HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../.web/data')
+
+SYSTEM_MESSAGE = f"""assistant 는 카카오 API 에 대한 챗봇 입니다.
+카카오 API 는 <API종류> 에 제시된 {len(DATA_BY_API)} 가지 입니다.
+<API종류>
+{", ".join(list(DATA_BY_API.keys()))}
+<API종류>
+ 
+질문의 답은 간결하고 명료하게 markdown 문법의 목록으로 작성한다.
+
+예시는 다음과 같다.
+<예시>
+{{질문에 대한 답 요약}}
+
+1.회원가입
+- {{회원가입에 대한 내용}}
+
+{{공백}}
+
+2.간편한 서비스약관 관리
+- {{서비스약관 처리 간소화 내용}}
+<예시>
+"""
+USER_TEMPLATE = """
+다음에 제시된 사용자의 질문에 답하세요.
+
+질문: {question}
+
+<연관문서>
+{related_documents}
+<연관문서>
+"""
+ANSWER_CHAIN = LLMChain(llm=LLM, prompt=ChatPromptTemplate.from_messages(
+    [SystemMessage(content=SYSTEM_MESSAGE),
+     HumanMessagePromptTemplate.from_template(template=USER_TEMPLATE)]
+))
+
+# TODO: langchain 의 routing chain 으로 바꿀 것
+API_TYPE_CHAIN = LLMChain(llm=LLM, prompt=ChatPromptTemplate.from_template(
+    f"""
+카카오 API 는 <API종류> 에 제시된 {len(DATA_BY_API)} 가지 입니다.
+<API종류>
+{", ".join(list(DATA_BY_API.keys()))},unknown
+<API종류>
+
+다음의 <질문>이 어떤 API 종류에 대한 것인지 구분하세요.
+
+<질문>
+{{question}}
+<질문>
+
+대답은 단답형으로 제시된 <API종류> 의 단어 중 1개만 포함합니다. 
+다른 단어나 문장은 쓰지 않습니다.
+unknown 은 API 종류를 특정할 수 없는 경우만 답변합니다.
+
+ex)
+unknown
+"""
+))
 
 
 # ------------------------------------------------------------------------------------------
 # -------- LLM Helper
 # ------------------------------------------------------------------------------------------
 
-def llm_query(question: str, api_type: str):
-    system_message = """assistant는 {api_type} 에 대한 chatbot 입니다.
-    다음 <{api_type}> 안에 제시되는 {api_type} 정보를 토대로 user 의 질문에 답한다.
-<{api_type}>
-{data_by_api}
-<{api_type}>
+def history_of_api_type(conversation_id: str):
+    file_path = os.path.join(HISTORY_PATH, f"{conversation_id}.json")
+    return FileChatMessageHistory(file_path)
 
-질문의 답은 간결하고 명료하게 markdown 문법의 목록으로 작성한다.
 
-예시는 다음과 같다.
-<예시>
-{질문에 대한 답 요약}
+def pop_api_type_in_history(conversation_id: str = "last_api_type"):
+    history = history_of_api_type(conversation_id)
+    if len(history.messages) == 0:
+        return "unknown"
+    else:
+        return history.messages.pop().content
 
-1.회원가입
-- {회원가입에 대한 내용}
 
-{공백줄}
+def push_api_type_to_history(api_type: str, conversation_id: str = "last_api_type"):
+    history = history_of_api_type(conversation_id)
+    history.add_user_message(api_type)
 
-2.간편한 서비스약관 관리
-- {서비스약관 처리 간소화 내용}
-<예시>
-"""
-    system_message_prompt = SystemMessage(content=system_message)
 
-    human_template = ("질문: {question}")
+def llm_query(question: str):
+    api_type = API_TYPE_CHAIN.run(question=question)
 
-    human_message_prompt = HumanMessagePromptTemplate.from_template(human_template)
-    chat_prompt = ChatPromptTemplate.from_messages([system_message_prompt, human_message_prompt])
+    if api_type == "unknown":
+        print(f"Can not judge by user input. search from history")
+        api_type = pop_api_type_in_history()
+        print(f"API_TYPE_BY_HISTORY: {api_type}")
+    else:
+        push_api_type_to_history(api_type)
 
-    chain = LLMChain(llm=chat, prompt=chat_prompt)
-    return chain.run(api_type=api_type, question=question)
+    print(f"API_TYPE_CHAIN's answer: {api_type}")
+    if api_type == "unknown":
+        # TODO: web search
+        return f"""잘못된 질문입니다. 대답할 수 있는 API 종류는 {", ".join(list(DATA_BY_API.keys()))} 입니다."""
+    elif api_type in DATA_BY_API:
+        related_documents = COLLECTION.query(query_texts=[f"api: {api_type}" + question], n_results=3)
+        print(f"related_documents from vectordb: {related_documents}")
+        answer = ANSWER_CHAIN.run(api_type=api_type, question=question, related_documents=related_documents)
+        print(f"ANSWER_CHAIN's answer: {answer}")
+        return answer
+    else:
+        raise Exception("cannot be here")
 
 
 # ------------------------------------------------------------------------------------------
@@ -67,7 +150,6 @@ def llm_query(question: str, api_type: str):
 # ------------------------------------------------------------------------------------------
 
 class QnA(Base):
-    api_type: str
     question: str
     answer: str
     created_at: str
@@ -89,20 +171,17 @@ class State(pc.State):
             raise Exception("input empty")
 
     async def on_submit(self, form_data):
-        api_type = form_data["api_type"]
         question = form_data["question"]
-        self.validate_not_empty(api_type)
         self.validate_not_empty(question)
         self.is_working = True
         qna = QnA(
-            api_type=form_data["api_type"],
             question=form_data["question"],
             answer="(ing) looking for an answer",
             created_at=datetime.now().strftime("%I:%M%p on %B %d, %Y")
         )
         self.qna_list.append(qna)
         yield
-        answer = llm_query(api_type=api_type, question=question)
+        answer = llm_query(question=question)
         print(answer)
         qna.answer = answer
         self.qna_list.remove(qna)
@@ -147,14 +226,6 @@ def qna_view(qna):
                 padding="1rem",
                 background_color="white"
             ),
-            pc.box(
-                pc.text(qna.api_type),
-                pc.text(" · ", margin_x="0.3rem"),
-                pc.text(qna.created_at),
-                display="flex",
-                font_size="0.8rem",
-                color="#666",
-            ),
             spacing="0.3rem",
             align_items="left",
         ),
@@ -194,13 +265,6 @@ def index():
                     border_color="#eaeaef",
                     id="question"
                 ),
-                pc.select(
-                    list(data_by_api.keys()),
-                    default_value=list(data_by_api.keys())[0],
-                    placeholder="> Choose KAKAO-API",
-                    margin_top="1rem",
-                    id="api_type"
-                ),
                 pc.button("💬 send", type_="submit", margin_top="1rem")
             ),
             on_submit=State.on_submit,
@@ -220,6 +284,33 @@ def index():
 # -------- Add state and page to the app.
 # ------------------------------------------------------------------------------------------
 
+def init():
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=100,
+        chunk_overlap=20,
+        length_function=len,
+        add_start_index=True,
+    )
+    id = 1
+    for apiType, fileName in DATA_BY_API.items():
+        with open(fileName) as f:
+            content = f.read()
+
+            ids = []
+            metas = []
+            documents = []
+            texts = text_splitter.create_documents([content])
+            text_len = len(texts)
+            for i in range(0, text_len):
+                ids.append(str(id))
+                metas.append({'apiType': apiType})
+                documents.append(texts[i].page_content)
+                id += 1
+
+            COLLECTION.add(ids=ids, metadatas=metas, documents=documents)
+
+
+init()
 app = pc.App(state=State)
 app.add_page(index, title="KAKAO-API QnA")
 app.compile()
